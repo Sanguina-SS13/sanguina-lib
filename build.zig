@@ -21,7 +21,7 @@ pub fn build(b: *std.Build) void {
 
     //THIRD: FINALLY DO THE THING
     const lib = b.addSharedLibrary(.{
-        .name = "nlib",
+        .name = "sanlib",
         .root_source_file = b.path("src/exports.zig"),
         .target = target,
         .optimize = optimize,
