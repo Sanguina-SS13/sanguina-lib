@@ -1,500 +1,234 @@
 const std = @import("std");
-const zig = @import("../defines/zig.zig");
+const zig = @import("../global/core.zig");
 
 const bapi = @import("../byondapi/_byondapi.zig");
 const types = @import("../byondapi/types.zig");
-const collision = @import("../byondapi/collision.zig");
+const col = @import("../byondapi/collision.zig");
+const render = @import("../byondapi/render.zig");
 
-const COLLISION = @import("../defines/collision.zig").COLLISION_FLAG;
-const sref = types.strRefs;
-
-fn decode_zebra(zebra: u72, allocator: std.mem.Allocator) std.ArrayList(u72) {
-    var ret = std.ArrayList(u72).init(allocator);
-
-    // given 11000100..
-    var markers = (zebra >> 1) ^ zebra; // 10100110 (start of each seq)
-    var total_shift = 0;
-    while (markers != 0) {
-        const bit_count = @ctz(markers) + 1; // 2
-        const mask = (1 << bit_count) - 1; // 001 => 100 => 011
-        ret.append(mask << @intCast(total_shift)) catch unreachable; // shift to align
-        total_shift += bit_count; // adjust the shift
-        markers >>= bit_count; // and get the next group in line
-    }
-
-    return ret;
-}
-//
 // shamelessly ripped from chatgpt
-fn dist_above_floor(floor: u72, mover: u72) u72 {
-    std.debug.assert(mover != 0);
+fn dist_above_floor(floor: col.CollisionData, mover: col.CollisionData) u7 {
+    const floor_mask = floor.collision_bitmask;
+    const mover_mask = mover.collision_bitmask;
+    std.debug.assert(mover_mask != 0);
 
     // Determine b's leftmost set bit (most significant bit set)
-    // Note: std.builtin.bitSize(u72) gives the total bit-width.
-    const bLeft = (@typeInfo(u72).int.bits - 1) - @clz(mover);
+    const bLeft: u7 = @as(u7, @typeInfo(u72).int.bits - 1) - @clz(mover_mask);
 
     // Isolate from 'a' only those bits that are strictly to the left of b's leftmost set bit.
     // The mask (~0 << (bLeft + 1)) has all bits set from position (bLeft+1) upward.
-    const candidate = floor & (~@as(u72, 0) << @intCast(bLeft + 1));
+    const candidate: u72 = floor_mask & (~@as(u72, 0) << @intCast(bLeft + 1));
 
     // The rightmost set bit in 'candidate' (i.e. the boundary of the relevant region in a)
-    const aBoundary = @ctz(candidate);
+    const aBoundary: u7 = @ctz(candidate);
 
     // The gap is the number of zeros between that bit and b's leftmost set bit.
     return aBoundary - bLeft - 1;
 }
 
-export fn enter_stacked(_mover: bapi.ByondValueRaw, _new_loc: bapi.ByondValueRaw, _old_loc: bapi.ByondValueRaw) callconv(.C) bapi.ByondValueRaw {
+pub fn entered_stacked(_mover: bapi.ByondValueRaw, _new_loc: bapi.ByondValueRaw, _old_loc: bapi.ByondValueRaw) callconv(.C) bapi.ByondValueRaw {
+    var alloc = zig.local_alloc;
+    const sref = types.strRefs;
+
+    const mover: bapi.ByondValue = .{ .inner = _mover };
+    const new_loc: bapi.ByondValue = .{ .inner = _new_loc };
+    _ = _old_loc;
+
+    const mover_collision = col.fetch_movable_collision(mover);
+    const turf_colliders = col.fetch_turf_collision(new_loc, true, alloc);
+    defer alloc.free(turf_colliders);
+
+    const DistData = struct {
+        distance: u10,
+        collider: col.CollisionData,
+    };
+
+    const height_mover = @clz(mover_collision.collision_bitmask);
+    var floor_or_null: ?DistData = null;
+
+    for (turf_colliders.items) |collider| {
+        if (@clz(collider.collision_bitmask) > height_mover)
+            continue; // above us
+
+        const collider_distance = dist_above_floor(collider, mover_collision);
+        if (floor_or_null == null or floor_or_null.?.distance > collider_distance) {
+            floor_or_null = .{
+                .distance = collider_distance,
+                .collider = collider,
+            };
+        }
+    }
+
+    if (floor_or_null == null) {
+        // YOU FALLIN INTO THE ABYSS M80
+        @branchHint(.unlikely);
+        // TODO
+        return bapi.getNull().inner;
+    }
+
+    const floor = floor_or_null.?;
+    const mover_step_size: u10 = @trunc(mover.readVarByID(sref.z_step_size).asNum());
+    if (floor.distance == 0) {
+        return bapi.getNull().inner;
+    }
+
+    if (floor.distance > mover_step_size) {
+        mover.callByID(sref.proc_zfall);
+    } else if (floor.distance != 0) {
+        // dont update if theres no need (dist == 0 if already stepped up (updated) on Enter(), f.e)
+        col.update_movable_collision(mover_collision);
+    }
+}
+
+pub fn enter_stacked(_mover: bapi.ByondValueRaw, _new_loc: bapi.ByondValueRaw, _old_loc: bapi.ByondValueRaw) callconv(.C) bapi.ByondValueRaw {
+    const sref = types.strRefs;
     const mover: bapi.ByondValue = .{ .inner = _mover };
     const new_loc: bapi.ByondValue = .{ .inner = _new_loc };
     const old_loc: bapi.ByondValue = .{ .inner = _old_loc };
 
-    var ret: bapi.ByondValue = undefined;
-
-    const crosser_collision_flags = mover.readVarByID(mover, sref.collision_flags).asNum();
-    if (@trunc(crosser_collision_flags) & COLLISION.NOCLIP) {
-        @branchHint(.unlikely);
-        return ret.writeNum(1);
-    }
-
     var alloc = zig.local_alloc;
 
-    var mover_bounds = collision.import_collision_bitfield(mover);
-    const turf_zebra = collision.import_turfmask_bitfield(new_loc);
-
-    var atom_bounds = std.ArrayList(bapi.ByondValue).initCapacity(alloc, 16) catch unreachable;
-    defer alloc.free(atom_bounds);
-    var atom_data = std.ArrayList(bapi.ByondValue).initCapacity(alloc, 16) catch unreachable;
-    defer alloc.free(atom_data);
-
-    const _turf_data = new_loc.readVarByID(sref.floor_by_height_index);
-    var total_collision_bitmask: u72 = 0;
-
-    switch (_turf_data.inner.type) {
-        .Null => {
-            @branchHint(.cold);
-            var ret: bapi.ByondValue = undefined;
-            return ret.writeNum(0);
-        },
-        .List => {
-            @branchHint(.unlikely);
-            const turf_bounds = decode_zebra(turf_zebra, alloc);
-            defer alloc.free(turf_bounds);
-
-            const turf_data = _turf_data.asList(alloc); //asserted isList already
-            defer alloc.free(turf_data);
-
-            for (turf_data, 0..) |value, i| {
-                if (value.inner.type == .Null)
-                    continue;
-
-                atom_data.append(value);
-                atom_bounds.append(turf_bounds[i]);
-                total_collision_bitmask |= turf_bounds[i];
-            }
-        },
-        _ => {
-            @branchHint(.likely);
-            atom_data.append(_turf_data);
-            atom_bounds.append(turf_zebra);
-            total_collision_bitmask |= turf_zebra;
-        },
+    const mover_collision = col.fetch_movable_collision(mover);
+    if (mover_collision.flags.NOCLIP) {
+        @branchHint(.unlikely);
+        return bapi.getNumber(1).inner;
     }
 
-    const contents = _turf_data.readVarByID(sref.contents).asList(alloc);
-    defer alloc.free(contents);
-
-    for (contents) |atom_ref| {
-        const collision_flags = @trunc(atom_ref.readVarByID(sref.collision_flags).asNum());
-        if (collision_flags & COLLISION.PASS_THROUGH) {
-            continue;
-        }
-
-        const bounds = collision.import_collision_bitfield(atom_ref);
-        atom_data.append(atom_ref);
-        atom_bounds.append(bounds);
-        total_collision_bitmask |= bounds;
-    }
+    const collision_new = col.fetch_turf_collision(new_loc, true, alloc);
+    defer alloc.free(collision_new);
+    const collision_old = col.fetch_turf_collision(old_loc, true, alloc);
+    defer alloc.free(collision_old);
 
     // now the actual meat
-    var moved_up = false;
-    if (total_collision_bitmask & mover_bounds != 0) brk: {
-        moved_up = true;
-        if (@ctz(mover_bounds) == 0)
-            break :brk;
+    var passthroughs = std.ArrayList(col.CollisionData).init(alloc);
+    defer alloc.free(passthroughs);
 
-        const mover_step_size: u24 = @trunc(mover.readVarByID(sref.z_step_size).asNum());
-        var bitshifted = mover_bounds;
-        for (0..mover_step_size) |_| {
-            bitshifted = @shrExact(bitshifted, 1);
-            if (mover_bounds & total_collision_bitmask == 0) {
-                mover_bounds = bitshifted;
-                break :brk;
-            }
+    const mover_step_size: u10 = if (mover_collision.flags.PROHIBIT_HEIGHT_INCREASE) 0 else @trunc(mover.readVarByID(sref.z_step_size).asNum());
+    const mover_head = mover_collision.collision_bitmask & -mover_collision.collision_bitmask; // two's compliment funky
 
-            if (@ctz(mover_bounds) == 0)
-                break :brk;
-        }
-    }
-    if (total_collision_bitmask & mover_bounds == 0) {
-        var height_above_floor: u24 = undefined;
-        const floor_or_null: ?bapi.ByondValue = {
-            if (@clz(total_collision_bitmask) >= @clz(mover_bounds)) {
-                @branchHint(.unlikely);
-                return null;
-            }
-            const checked_bit = if (moved_up) {
-                height_above_floor = 0;
-                return ((mover_bounds << 1) | mover_bounds) ^ mover_bounds;
-            } else {
-                height_above_floor = dist_above_floor(total_collision_bitmask, mover_bounds);
-                return (((mover_bounds << 1) | mover_bounds) ^ mover_bounds) << height_above_floor - 2;
-            };
-
-            for (atom_bounds, 0..) |bounds, i| {
-                if (bounds & checked_bit == 0)
+    var bumped: ?col.CollisionData = null;
+    var success: bool = false;
+    outer: for (0..@min(mover_step_size, @ctz(mover_head)) + 1) |i| {
+        if (i != 0) {
+            // check if we're not bumping into a ceiling
+            for (collision_old) |collider| {
+                if (mover_head & collider == 0)
                     continue;
-
-                return atom_data[i];
+                if (collider.flags.PASS_THROUGH) {
+                    if (std.mem.indexOfScalar(col.CollisionData, passthroughs.items, collider))
+                        continue;
+                    passthroughs.append(collider);
+                    continue;
+                }
+                success = false;
+                break :outer;
             }
-            return null;
-        };
-
-        if (floor_or_null == null) {
-            // YOU FALLIN INTO THE ABYSS M80
-            @branchHint(.unlikely);
-            // TODO
-            return ret.writeNum(0);
         }
 
-        if (moved_up) {
-            collision.export_collision_bitfield(mover, mover_bounds);
-            //var val: bapi.ByondValue = undefined;
-            //mover.writeVarByID(sref.plane, val.writeNum(@clz(mover_bounds)));
-        }
-
-        const VTag = bapi.ValueTag;
-        const floor = floor_or_null.?;
-
-        switch (floor.inner.type) {
-            // movable
-            VTag.Obj, VTag.Mob => floor.callByID(sref.proc_walked_on, .{mover}),
-            // /datum/floor_type instance
-            VTag.Datum => _ = floor.callByID(sref.proc_walked_on, .{mover}),
-            // /datum/floor_type typepath
-            VTag.DatumTypepath => {
-                const floor_type = floor.toString(alloc);
-                defer alloc.free(floor_type);
-                const proc_name = std.mem.concat(alloc, u8, .{ floor_type, "::SteppedOn()" }) catch unreachable;
-                defer alloc.free(proc_name);
-
-                _ = bapi.callGlobal(proc_name, .{mover});
-            },
-            _ => unreachable,
-        }
-
-        return ret.writeNum(1);
-    } else {
-        const bumped: bapi.ByondValue = {
-            for (atom_bounds, 0..) |bounds, i| {
-                if (bounds & mover_bounds != 0)
-                    return atom_data[i];
+        var blocked_movement = false;
+        for (collision_new) |collider| {
+            if (std.meta.eql(collider.ref.inner, mover.inner)) {
+                @branchHint(.unlikely);
+                continue; // dont collide with yourself kthx
             }
-            unreachable;
-        };
-        // let the mover know..
-        _ = mover.callByID(sref.proc_blocked, .{bumped});
+            if (collider.collision_bitmask & mover_collision.collision_bitmask == 0)
+                continue;
 
-        // .. as well as the wall itself
-        const VTag = bapi.ValueTag;
-        switch (bumped.inner.type) {
-            // movable
-            VTag.Obj, VTag.Mob => bumped.callByID(sref.proc_bump, .{mover}),
-            // /datum/floor_type instance
-            VTag.Datum => _ = bumped.callByID(sref.proc_bump, .{mover}),
-            // /datum/floor_type typepath
-            VTag.DatumTypepath => {
-                const floor_type = bumped.toString(alloc);
-                defer alloc.free(floor_type);
-                const proc_name = std.mem.concat(alloc, u8, .{ floor_type, "::Bump()" }) catch unreachable;
-                defer alloc.free(proc_name);
-
-                _ = bapi.callGlobal(proc_name, .{mover});
-            },
-            _ => unreachable,
+            if (collider.flags.PASS_THROUGH) {
+                @branchHint(.unlikely);
+                passthroughs.append(collider);
+                continue; // we handle these later
+            }
+            if (collider.flags.BLOCK_NO_BUMP) {
+                blocked_movement = true;
+                continue; // scan for any actual bumpers
+            }
+            bumped = collider;
+            continue :outer;
         }
+        if (blocked_movement)
+            continue;
 
-        return ret.writeNum(0);
+        mover_collision.collision_bitmask >> i;
+        success = true;
+        break;
     }
 
-    // var total_collision_mask: u72 = 0;
-    // var collision_masks_turfs = std.ArrayList(u72).initCapacity(alloc, 8) catch unreachable;
-    // var collision_masks_movables = std.ArrayList(u72).initCapacity(alloc, 8) catch unreachable;
-    // defer alloc.free(collision_masks_turfs);
-    // defer alloc.free(collision_masks_movables);
+    if (success) {
+        for (passthroughs.items) |collider| {
+            const args = alloc.alloc(bapi.ByondValue, 1) catch unreachable;
+            defer alloc.free(args);
 
-    // // turfs
-    // _ = bapi.Byond_ReadVarByStrId(&target_turf, sref.turf_floor_by_height, &var_ref);
-    // const ref_floor_by_height = var_ref; // ..and the type of the floor
-    // {
-    //     const turf_zebra_bitmask = extract_bitfield_turf(target_turf);
-    //     if (bapi.ByondValue_IsList(ref_floor_by_height)) {
-    //         @branchHint(.unlikely);
-    //         const floor_by_height = bapi.read_list(ref_floor_by_height);
+            switch (collider.ref.inner.type) {
+                .Obj, .Mob => collider.ref.callByID(sref.proc_bumped, args),
+                _ => collider.ref.callSrcless("Bumped", args),
+            }
+        }
+        return bapi.getNumber(1).inner;
+    } else {
+        if (bumped) |collider| {
+            const args = alloc.alloc(bapi.ByondValue, 1) catch unreachable;
+            defer alloc.free(args);
 
-    //         // given 11000100..
-    //         var markers = (turf_zebra_bitmask >> 1) ^ turf_zebra_bitmask; // 10100110 (start of each seq)
-    //         var total_shift = 0;
-    //         var i = 0;
-    //         while (markers != 0) {
-    //             if (!(i < floor_by_height.len))
-    //                 // we're at the last mask, and its null (therefore no array entry)
-    //                 break;
+            switch (collider.ref.inner.type) {
+                .Obj, .Mob => collider.ref.callByID(sref.proc_bumped, args),
+                _ => collider.ref.callSrcless("Bumped", args),
+            }
+        }
+        return bapi.getNumber(0).inner;
+    }
+}
 
-    //             const bit_count = @ctz(markers) + 1; // 2
-    //             const mask = (1 << bit_count) - 1; // 001 => 100 => 011
-    //             if (bapi.ByondValue_IsNull(floor_by_height[i]))
-    //                 collision_masks_turfs.append(0) catch unreachable
-    //             else {
-    //                 const collision_box = mask << @intCast(total_shift); //shift to align
-    //                 total_collision_mask |= collision_box;
-    //                 collision_masks_turfs.append(collision_box) catch unreachable;
-    //             }
+pub fn get_floor_at(_turf: bapi.ByondValueRaw, _height: bapi.ByondValueRaw) callconv(.C) bapi.ByondValueRaw {
+    const turf = bapi.ByondValue{ .inner = _turf };
 
-    //             total_shift += bit_count; // adjust the shift
-    //             markers >>= bit_count; // and get the next group in line
-    //             i += 1;
-    //         }
-    //     } else if (!bapi.ByondValue_IsNull(ref_floor_by_height)) {
-    //         @branchHint(.likely);
-    //         total_collision_mask |= turf_zebra_bitmask;
-    //         collision_masks_turfs.append(turf_zebra_bitmask);
-    //     } else {
-    //         @branchHint(.cold);
-    //     }
-    // }
-    // const mover_max_height_adjust = 1; // TODO figure a better name also unhardcode it
-    // var mover_bitmask = extract_bitfield_movable(mover);
-    // if (total_collision_mask & mover_bitmask != 0 and total_collision_mask & (mover_bitmask >> mover_max_height_adjust) != 0) {
-    //     // not much point to continue is there
-    //     return bapi.set_num(0);
-    // }
+    const collision_turf = col.fetch_turf_collision(turf, false, zig.local_alloc);
+    defer zig.local_alloc.free(collision_turf);
 
-    // // movables
-    // const contents = bapi.read_list(bapi.read_var(target_turf, sref.contents));
-    // for (contents) |atom_ref| {
-    //     const collision_flags = @trunc(bapi.get_num(bapi.read_var(atom_ref, sref.collision_flags)));
-    //     if (collision_flags & (COLLISION.NOCLIP | COLLISION.PASS_THROUGH) != 0) {
-    //         //lets not cockblock ppl through admeme fuckery
-    //         collision_masks_movables.append(0);
-    //         continue;
-    //     }
+    const checked_bit: u72 = ((std.math.maxInt(u72) >> 1) + 1) >> (@as(u24, @intFromFloat(_height.data.num)) - 1);
+    for (collision_turf.items) |val| {
+        if (val.collision_bitmask & checked_bit) {
+            return val.ref.inner;
+        }
+    }
+    return bapi.getNull().inner;
+}
 
-    //     const collision = extract_bitfield_movable(atom_ref);
-    //     collision_masks_movables.append(collision);
-    //     total_collision_mask |= collision;
-    // }
+pub fn get_floor_top(_turf: bapi.ByondValueRaw) callconv(.C) bapi.ByondValueRaw {
+    const turf = bapi.ByondValue{ .inner = _turf };
 
-    // // now the actual meat
-    // var moved_up = false;
-    // if (total_collision_mask & mover_bitmask != 0) {
-    //     if ((mover_bitmask >> mover_max_height_adjust) & total_collision_mask == 0) {
-    //         // TODO fix for custom step sizes
-    //         moved_up = true;
-    //         mover_bitmask >>= mover_max_height_adjust;
-    //     }
-    // }
+    const collision_turf = col.fetch_turf_collision(turf, false, zig.local_alloc);
+    defer zig.local_alloc.free(collision_turf);
 
-    // if (total_collision_mask & mover_bitmask == 0) {
-    //     const floor: ?bapi.ByondValue = {
-    //         if (!moved_up and @clz(total_collision_mask) >= @clz(mover_bitmask)) {
-    //             @branchHint(.unlikely);
-    //             return null;
-    //         }
-    //         const checked_bit = if (moved_up)
-    //             ((mover_bitmask << 1) | mover_bitmask) ^ mover_bitmask
-    //         else
-    //             dist_above_floor(total_collision_mask, mover_bitmask);
+    return collision_turf.getLast().ref.inner;
+}
 
-    //         for (collision_masks_turfs, 0..) |collision, i| {
-    //             if (collision & checked_bit == 0)
-    //                 continue;
+pub fn get_floor_below(_mover: bapi.ByondValueRaw, _direct: bapi.ByondValueRaw) callconv(.C) bapi.ByondValueRaw {
+    const mover: bapi.ByondValue = .{_mover};
+    const _direct_val: bapi.ByondValue = .{_direct};
+    const direct = _direct_val.isTrue();
+    const sref = types.strRefs;
 
-    //             const floor_by_height = bapi.read_list(ref_floor_by_height);
-    //             return floor_by_height[i];
-    //         }
+    const collision_mover = col.fetch_movable_collision(mover);
+    const collision_turf = col.fetch_turf_collision(
+        bapi.callGlobalByID(sref.proc_get_step, .{
+            mover,
+            bapi.getNumber(0),
+        }),
+        zig.local_alloc,
+    );
+    var checked_bit = (collision_mover.collision_bitmask << 1) ^ collision_mover.collision_bitmask;
 
-    //         for (collision_masks_movables, 0..) |collision, i| {
-    //             if (collision & checked_bit == 0)
-    //                 continue;
-
-    //             return contents[i];
-    //         }
-
-    //         return null;
-    //     };
-
-    //     if (floor == null) {
-    //         // YOU FALLIN INTO THE ABYSS M80
-    //         @branchHint(.unlikely);
-    //         // TODO
-    //         return bapi.set_num(1);
-    //     }
-
-    //     if (moved_up) {
-    //         //collapse the value back into 3 floats
-    //         const f1: f32 = @bitCast(mover_bitmask & @as(u24, ~0));
-    //         const f2: f32 = @bitCast((mover_bitmask << 24) & @as(u24, ~0));
-    //         const f3: f32 = @bitCast((mover_bitmask << 48) & @as(u24, ~0));
-
-    //         bapi.set_num(bapi.read_var(&mover, sref.movable_bitmask_a), f1);
-    //         bapi.set_num(bapi.read_var(&mover, sref.movable_bitmask_b), f2);
-    //         bapi.set_num(bapi.read_var(&mover, sref.movable_bitmask_c), f3);
-    //     }
-
-    //     const VTag = bapi.ValueTag;
-    //     switch (floor.?.type) {
-    //         // movable
-    //         VTag.Obj, VTag.Mob => _ = bapi.call_proc(floor.?, sref.proc_walked_on, mover, 1),
-    //         // /datum/floor_type instance
-    //         VTag.Datum => _ = bapi.call_proc(floor.?, sref.proc_walked_on, mover, 1),
-    //         // /datum/floor_type typepath
-    //         VTag.DatumTypepath => {
-    //             const proc_name = std.mem.concat(alloc, u8, .{ bapi.to_string(floor.?), "::WalkedOn()" }) catch unreachable;
-    //             defer alloc.free(proc_name);
-
-    //             bapi.call_global_proc(proc_name, mover, 1);
-    //         },
-    //         _ => unreachable,
-    //     }
-    //     return bapi.set_num(0);
-    // } else {
-    //     @compileError("FINISH");
-    // }
-
-    // _ = bapi.Byond_ReadVarByStrId(&target_turf, sref.turf_floor_by_height, &var_ref);
-    // const ref_floor_by_height = var_ref; // ..and the type of the floor
-
-    // var move_succeeded = true;
-    // var bumped: ?bapi.ByondValue = null;
-    // var floor: ?bapi.ByondValue = null;
-
-    // _ = overlap_check: {
-    //     // first the turfs
-    //     if (bapi.ByondValue_IsList(ref_floor_by_height)) not_it: {
-    //         @branchHint(.unlikely);
-
-    //         const colliders = decode_zebra(turf_zebra_bitmask, alloc);
-    //         defer alloc.free(colliders);
-
-    //         const len_floor_by_height: bapi.u4c = undefined;
-    //         _ = bapi.Byond_ReadList(ref_floor_by_height, null, &len_floor_by_height);
-    //         const floor_by_height: [len_floor_by_height]bapi.ByondValue = undefined;
-    //         _ = bapi.Byond_ReadList(ref_floor_by_height, floor_by_height, len_floor_by_height);
-
-    //         var collided = false;
-    //         for (colliders, 0..) |collision_map, i| {
-    //             if (collision_map & mover_bitmask == 0) {
-    //                 if (collided)
-    //                     break :not_it;
-
-    //                 if (bapi.ByondValue_IsNull(floor_by_height[i]))
-    //                     continue;
-
-    //                 floor = floor_by_height[i];
-    //             }
-
-    //             if (bapi.ByondValue_IsNull(floor_by_height[i]))
-    //                 continue;
-
-    //             if (collision_map & (mover_bitmask >> mover_max_height_adjust) == 0) {
-    //                 // TODO handling for steps larger than 1
-    //                 std.debug.assert(@TypeOf(mover_max_height_adjust) == comptime_int and mover_max_height_adjust == 1);
-    //                 mover_bitmask >>= mover_max_height_adjust;
-    //                 mover_max_height_adjust = 0;
-    //                 collided = true;
-    //                 continue;
-    //             }
-    //             // wow, nice, complete overlap
-    //             break :overlap_check; // means we can skip checking everything else
-    //         }
-    //     } else if (!bapi.ByondValue_IsNull(ref_floor_by_height)) not_it: {
-    //         // most common scenario: regular ass turf; collision check is just overlap
-    //         @branchHint(.likely);
-    //         floor = ref_floor_by_height;
-    //         if (turf_zebra_bitmask & mover_bitmask == 0)
-    //             break :not_it;
-
-    //         if (turf_zebra_bitmask & (mover_bitmask >> mover_max_height_adjust) != 0) {
-    //             move_succeeded = false;
-    //             break :overlap_check;
-    //         }
-    //         // TODO handling for steps larger than 1
-    //         std.debug.assert(@TypeOf(mover_max_height_adjust) == comptime_int and mover_max_height_adjust == 1);
-    //         mover_bitmask >>= mover_max_height_adjust;
-    //         mover_max_height_adjust = 0;
-    //     } else {
-    //         // abyss/chasm/whatever you wanna call it
-    //         // we dont actually do anything here, this is just for the branch hint
-    //         @branchHint(.cold);
-    //     }
-
-    //     // then the movables
-    //     _ = bapi.Byond_ReadVarByStrId(&target_turf, sref.contents, &var_ref);
-    //     const contents_len: bapi.u4c = undefined;
-    //     _ = bapi.Byond_ReadList(&var_ref, null, &contents_len);
-    //     const ref_contents: [contents_len]bapi.ByondValue = undefined;
-    //     _ = bapi.Byond_ReadList(&var_ref, &ref_contents, &contents_len);
-
-    //     //const LAYER_STRUCT = struct {
-    //     //    ref: bapi.ByondValue,
-    //     //    layer: f32,
-    //     //};
-    //     //var struct_contents: [contents_len]LAYER_STRUCT = undefined;
-    //     //for (ref_contents, 0..) |value, i| {
-    //     //    _ = bapi.Byond_ReadVarByStrId(value, str_refs.layer.?, &var_ref);
-    //     //    struct_contents[i] = .{ .ref = value, .layer = bapi.ByondValue_GetNum(&var_ref) };
-    //     //}
-
-    //     //const sort_fn = struct {
-    //     //    fn sort_fn(lhs: LAYER_STRUCT, rhs: LAYER_STRUCT) bool {
-    //     //        return lhs.layer < rhs.layer;
-    //     //    }
-    //     //}.sort_fn;
-    //     //
-    //     //std.mem.reverse(bapi.ByondValue, struct_contents); // reverse so that in case of ties, the objs that enter last have priority
-    //     //std.mem.sort(bapi.ByondValue, struct_contents, {}, sort_fn); // sort by layer
-
-    //     // nab the individual collision masks from the movables
-    //     for (ref_contents) |atom_ref| {
-    //         _ = bapi.Byond_ReadVarByStrId(atom_ref, sref.collision_flags, var_ref);
-    //         const collision_flags = @trunc(bapi.ByondValue_GetNum(var_ref));
-    //         if (collision_flags & (COLLISION.NOCLIP | COLLISION.PASS_THROUGH) != 0) //lets not cockblock ppl through admeme fuckery
-    //             continue;
-
-    //         const collision = extract_bitfield_movable(atom_ref);
-    //         if (collision & mover_bitmask == 0)
-    //             continue;
-
-    //         if (mover_max_height_adjust != 0) {
-    //             if (collision & (mover_bitmask >> mover_max_height_adjust) == 0) {
-    //                 // TODO handling for steps larger than 1
-    //                 std.debug.assert(@TypeOf(mover_max_height_adjust) == comptime_int and mover_max_height_adjust == 1);
-    //                 mover_bitmask >>= mover_max_height_adjust;
-    //                 mover_max_height_adjust = 0;
-    //             }
-    //             continue;
-    //         }
-    //         move_succeeded = false;
-    //         bumped = atom_ref;
-    //     }
-    // };
-
-    // // TODO finish
-    // if (!move_succeeded) {
-    //     var result: bapi.ByondValue = undefined;
-    //     _ = bapi.Byond_CallProcByStrId(bumped, sref.proc_bump, mover, 1, &result);
-    //     _ = bapi.ByondValue_SetNum(&result, 0);
-    //     return result;
-    // } else {}
+    while (checked_bit != 0) {
+        for (collision_turf.items) |val| {
+            if (val.collision_bitmask & checked_bit != 0) {
+                return val.ref.inner;
+            }
+        }
+        if (direct) {
+            break;
+        }
+        checked_bit <<= 1;
+    }
+    return bapi.getNull().inner;
 }

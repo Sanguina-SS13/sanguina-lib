@@ -78,7 +78,7 @@ pub const ByondValueType = enum(u1c) {
     // ? = 0x3C
     // ? = 0x3D
     // ? = 0x3E
-    ByondInt = 0x3F, // cpu/maxz/sleep_offline, some internal int value? // rustg doesnt have it :3
+    ByondInt = 0x3F, // cpu/maxz/sleep_offline, some internal int value? // anyways rustg doesnt have it :3
     ImageOverlays = 0x40,
     ImageUnderlays = 0x41,
     ImageVars = 0x42,
@@ -104,7 +104,9 @@ pub const ByondValueType = enum(u1c) {
 
 pub const CByondValue = extern struct {
     type: ByondValueType,
-    _: u24 = undefined,
+    junk1: u1c = undefined,
+    junk2: u1c = undefined,
+    junk3: u1c = undefined,
     data: extern union {
         ref: u4c,
         num: f32,
@@ -115,14 +117,14 @@ pub const CByondXYZ = extern struct {
     x: s2c,
     y: s2c,
     z: s2c,
-    _: s2c,
+    _: s2c = undefined,
 };
 
 pub const CByondPixLoc = extern struct {
     x: f32,
     y: f32,
     z: s2c,
-    _: s2c,
+    _: s2c = undefined,
 };
 
 pub const ByondCallback = *const fn (*anyopaque) callconv(.c) CByondValue;
@@ -319,7 +321,7 @@ pub extern fn Byond_ReadList(loc: *const CByondValue, list: ?[*]CByondValue, len
 /// @param list CByondValue array of items to write
 /// @param len Number of items to write
 /// @return True on success
-pub extern fn Byond_WriteList(loc: *const CByondValue, list: *const CByondValue, len: u4c) bool;
+pub extern fn Byond_WriteList(loc: *const CByondValue, list: [*]CByondValue, len: u4c) bool;
 
 /// Reads items as key,value pairs from an associative list, storing them sequentially as key1, value1, key2, value2, etc.
 /// Blocks if not on the main thread.
@@ -327,7 +329,7 @@ pub extern fn Byond_WriteList(loc: *const CByondValue, list: *const CByondValue,
 /// @param list CByondValue array, allocated by caller (can be null if querying length)
 /// @param len Pointer to length of array (in items); receives the number of items read on success, or required length of array if not big enough
 /// @return True on success; false with *len=0 for failure; false with *len=required size if array is not big enough
-pub extern fn Byond_ReadListAssoc(loc: *const CByondValue, ?[*]CByondValue, len: *u4c) bool;
+pub extern fn Byond_ReadListAssoc(loc: *const CByondValue, list: ?[*]CByondValue, len: *u4c) bool;
 
 /// Reads an item from a list.
 /// Blocks if not on the main thread.

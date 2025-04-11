@@ -45,6 +45,9 @@ pub var strRefs: struct {
     // byond inbuilts
     contents: bapi.RefID,
     layer: bapi.RefID,
+    plane: bapi.RefID,
+    invisibility: bapi.RefID,
+    see_invisible: bapi.RefID,
     // floor map
     floor_by_height_index: bapi.RefID,
     turf_bitmask_a: bapi.RefID,
@@ -59,7 +62,8 @@ pub var strRefs: struct {
     // procs
     proc_text2path: bapi.RefID,
     proc_bump: bapi.RefID,
-    proc_blocked: bapi.RefID,
+    proc_bumped: bapi.RefID,
+    proc_steppedon: bapi.RefID,
 } = undefined;
 
 pub var typeLookup: struct {

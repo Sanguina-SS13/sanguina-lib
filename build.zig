@@ -6,27 +6,27 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     //FIRST, THE UHHH. BYOND.
-    const raw_header = b.addTranslateC(.{
-        .link_libc = false,
-        .optimize = .Debug,
-        .root_source_file = b.path("src/_byondapi.h"),
-        .target = target,
-        .use_clang = true,
-    });
-    const byondapi = raw_header.addModule("byondapi");
-    byondapi.linkSystemLibrary("shlwapi", .{});
+    //const raw_header = b.addTranslateC(.{
+    //    .link_libc = false,
+    //    .optimize = .Debug,
+    //    .root_source_file = b.path("src/_byondapi.h"),
+    //    .target = target,
+    //    .use_clang = true,
+    //});
+    //const byondapi = raw_header.addModule("byondapi");
+    //byondapi.linkSystemLibrary("shlwapi", .{});
 
     //SECOND, pRECOMPTIME SHIT
-    generatePrecomp(b);
+    //generatePrecomp(b);
 
     //THIRD: FINALLY DO THE THING
     const lib = b.addSharedLibrary(.{
-        .name = "sanlib",
-        .root_source_file = b.path("src/exports.zig"),
+        .name = "san",
+        .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
     });
-    lib.root_module.addImport("byondapi", byondapi);
+    //lib.root_module.addImport("byondapi", byondapi);
     b.installArtifact(lib);
 }
 
