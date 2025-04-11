@@ -26,8 +26,8 @@ pub fn cancelOpposite(val: u4) u4 {
 /// Returned bitDir uses source as the reference point.
 pub fn coords2dir(source: bapi.ByondXYZ, compared: bapi.ByondXYZ) u4 {
     var ret: u4 = 0;
-    const xsign = std.math.sign(compared - source);
-    const ysign = std.math.sign(compared - source);
+    const xsign = std.math.sign(compared.inner.x - source.inner.x);
+    const ysign = std.math.sign(compared.inner.y - source.inner.y);
 
     ret |= switch (xsign) {
         -1 => bitDir.West,
@@ -64,8 +64,14 @@ pub var strRefs: struct {
     proc_bump: bapi.RefID,
     proc_bumped: bapi.RefID,
     proc_steppedon: bapi.RefID,
+    proc_zfall: bapi.RefID,
+    proc_get_step: bapi.RefID,
 } = undefined;
 
 pub var typeLookup: struct {
     @"/turf/stacked": bapi.ByondValue,
 } = undefined;
+
+pub fn float2flags(T: anytype, f: f32) T {
+    return @bitCast(@as(u24, @truncate(@as(u32, @intFromFloat(f)))));
+}

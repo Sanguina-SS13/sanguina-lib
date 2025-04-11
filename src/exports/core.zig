@@ -37,14 +37,16 @@ pub fn init() callconv(.c) bapi.ByondValueRaw {
         .proc_bump = temp.writeStr("Bump").incRef().asRef(),
         .proc_bumped = temp.writeStr("Bumped").incRef().asRef(),
         .proc_steppedon = temp.writeStr("SteppedOn").incRef().asRef(),
+        .proc_zfall = temp.writeStr("ZFall").incRef().asRef(),
+        .proc_get_step = temp.writeStr("get_step").incRef().asRef(),
     };
     types.typeLookup = .{
         // assume that typepath refs cant gc
-        .@"/turf/stacked" = bapi.callGlobalByID(types.strRefs.proc_text2path, .{temp.writeStr("/turf/stacked").inner}),
+        .@"/turf/stacked" = bapi.callGlobalByID(types.strRefs.proc_text2path, &[_]bapi.ByondValueRaw{temp.writeStr("/turf/stacked").inner}),
     };
 
     // collision
-    collision.collision_map = .init(zig.global_alloc) catch unreachable;
+    //collision.collision_map = .init(zig.global_alloc) catch unreachable;
     //for (collision.collision_map) |value| {}
 
     return bapi.getNull().inner;
