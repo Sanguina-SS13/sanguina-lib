@@ -182,7 +182,7 @@ pub const ByondValue = struct {
     }
 
     pub fn writeAt(self: ByondValue, index: ByondValue, value: ByondValue) void {
-        if (!bapi.Byond_WriteListIndex(&self.inner, index.inner, value.inner))
+        if (!bapi.Byond_WriteListIndex(&self.inner, &index.inner, &value.inner))
             crash();
     }
 
@@ -289,6 +289,19 @@ pub fn getNumber(num: f32) ByondValue {
 pub fn createList() ByondValue {
     var ret: ByondValueRaw = undefined;
     if (!bapi.Byond_CreateList(&ret))
+        crash();
+    return ret;
+}
+
+pub fn new(instantiated_type: ByondValue, args_or_null: ?[]const ByondValueRaw) ByondValue {
+    var ret: ByondValue = undefined;
+    if (args_or_null == null) {
+        if (!bapi.Byond_New(&instantiated_type.inner, null, 0, &ret.inner))
+            crash();
+        return ret;
+    }
+    const args = args_or_null.?;
+    if (!bapi.Byond_New(&instantiated_type.inner, args.ptr, @intCast(args.len), &ret.inner))
         crash();
     return ret;
 }

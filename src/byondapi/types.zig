@@ -59,6 +59,8 @@ pub var strRefs: struct {
     movable_bitmask_a: bapi.RefID,
     movable_bitmask_b: bapi.RefID,
     movable_bitmask_c: bapi.RefID,
+    // global vars
+    glob_floor_type_lookup: bapi.RefID,
     // procs
     proc_text2path: bapi.RefID,
     proc_bump: bapi.RefID,
@@ -66,11 +68,14 @@ pub var strRefs: struct {
     proc_steppedon: bapi.RefID,
     proc_zfall: bapi.RefID,
     proc_get_step: bapi.RefID,
+    proc_istype: bapi.RefID,
 } = undefined;
 
 pub var typeLookup: struct {
     @"/turf/stacked": bapi.ByondValue,
 } = undefined;
+
+pub var globHolder: bapi.ByondValue = undefined;
 
 pub fn float2flags(T: anytype, f: f32) T {
     return @bitCast(@as(u24, @truncate(@as(u32, @intFromFloat(f)))));

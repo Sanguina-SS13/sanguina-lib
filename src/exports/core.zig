@@ -32,18 +32,24 @@ pub fn init() callconv(.c) bapi.ByondValueRaw {
         .movable_bitmask_a = temp.writeStr("collision_bitmask_lower").incRef().asRef(),
         .movable_bitmask_b = temp.writeStr("collision_bitmask").incRef().asRef(),
         .movable_bitmask_c = temp.writeStr("collision_bitmask_upper").incRef().asRef(),
+        // glob vars
+        .glob_floor_type_lookup = temp.writeStr("floor_type_lookup").incRef().asRef(),
         // procs
         .proc_text2path = temp.writeStr("text2path").incRef().asRef(),
         .proc_bump = temp.writeStr("Bump").incRef().asRef(),
         .proc_bumped = temp.writeStr("Bumped").incRef().asRef(),
         .proc_steppedon = temp.writeStr("SteppedOn").incRef().asRef(),
         .proc_zfall = temp.writeStr("ZFall").incRef().asRef(),
-        .proc_get_step = temp.writeStr("get_step").incRef().asRef(),
+        // not-ideals
+        .proc_get_step = temp.writeStr("_get_step").incRef().asRef(),
+        .proc_istype = temp.writeStr("_istype").incRef().asRef(),
     };
     types.typeLookup = .{
         // assume that typepath refs cant gc
         .@"/turf/stacked" = bapi.callGlobalByID(types.strRefs.proc_text2path, &[_]bapi.ByondValueRaw{temp.writeStr("/turf/stacked").inner}),
     };
+    // fetch GLOB.. ugly, i know.
+    types.globHolder = bapi.callGlobal("sanlib_get_glob_holder", null);
 
     // collision
     //collision.collision_map = .init(zig.global_alloc) catch unreachable;

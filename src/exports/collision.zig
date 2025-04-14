@@ -5,6 +5,7 @@ const bapi = @import("../byondapi/_byondapi.zig");
 const types = @import("../byondapi/types.zig");
 const col = @import("../byondapi/collision.zig");
 const render = @import("../byondapi/render.zig");
+const bit = @import("../helpers/bitmath.zig");
 
 // shamelessly ripped from chatgpt
 fn dist_above_floor(floor: col.CollisionData, mover: col.CollisionData) u7 {
@@ -32,9 +33,9 @@ pub fn entered_stacked(_mover: bapi.ByondValueRaw, _new_loc: bapi.ByondValueRaw,
 
     const mover: bapi.ByondValue = .{ .inner = _mover };
     const new_loc: bapi.ByondValue = .{ .inner = _new_loc };
-    _ = _old_loc;
+    const old_loc: bapi.ByondValue = .{ .inner = _old_loc };
 
-    const mover_collision = col.fetch_movable_collision(mover);
+    var mover_collision = col.fetch_movable_collision(mover);
     const turf_colliders = col.fetch_turf_collision(new_loc, true, alloc);
     defer turf_colliders.deinit();
 
@@ -42,20 +43,39 @@ pub fn entered_stacked(_mover: bapi.ByondValueRaw, _new_loc: bapi.ByondValueRaw,
         distance: u10,
         collider: col.CollisionData,
     };
-
-    const height_mover = @clz(mover_collision.collision_bitmask);
     var floor_or_null: ?DistData = null;
 
-    for (turf_colliders.items) |collider| {
-        if (@clz(collider.collision_bitmask) > height_mover)
-            continue; // above us
+    if (bapi.callGlobalByID(sref.proc_istype, &[_]bapi.ByondValueRaw{ old_loc.inner, types.typeLookup.@"/turf/stacked".inner }).inner.data.num != 0) {
+        // we're coming from a fellow stackee, try and pretend this is actual 3D
+        const height_mover = @clz(mover_collision.collision_bitmask);
 
-        const collider_distance = dist_above_floor(collider, mover_collision);
-        if (floor_or_null == null or floor_or_null.?.distance > collider_distance) {
-            floor_or_null = .{
-                .distance = collider_distance,
-                .collider = collider,
-            };
+        for (turf_colliders.items) |collider| {
+            if (@clz(collider.collision_bitmask) > height_mover)
+                continue; // above us
+
+            const collider_distance = dist_above_floor(collider, mover_collision);
+            if (floor_or_null == null or floor_or_null.?.distance > collider_distance) {
+                floor_or_null = .{
+                    .distance = collider_distance,
+                    .collider = collider,
+                };
+            }
+        }
+    } else {
+        // fuck it just shove him wherever
+        mover_collision.collision_bitmask >>= @ctz(mover_collision.collision_bitmask);
+        outer: while (@clz(mover_collision.collision_bitmask) > 0) {
+            const floor_bit = bit.floor_bit_contiguous(mover_collision.collision_bitmask);
+
+            for (turf_colliders.items) |collider| {
+                if (collider.collision_bitmask & floor_bit != 0) {
+                    floor_or_null = .{
+                        .distance = 0,
+                        .collider = collider,
+                    };
+                    break :outer;
+                }
+            }
         }
     }
 
@@ -105,7 +125,7 @@ pub fn enter_stacked(_mover: bapi.ByondValueRaw, _new_loc: bapi.ByondValueRaw, _
     defer passthroughs.deinit();
 
     const mover_step_size: u7 = if (mover_collision.flags.PROHIBIT_HEIGHT_INCREASE) 0 else @intFromFloat(mover.readVarByID(sref.z_step_size).asNum());
-    const mover_head = mover_collision.collision_bitmask & @as(u72, @bitCast(-@as(i72, @bitCast(mover_collision.collision_bitmask)))); // two's compliment funky
+    const mover_head = bit.head_bit(mover_collision.collision_bitmask);
 
     var bumped: ?col.CollisionData = null;
     var success: bool = false;
@@ -178,52 +198,63 @@ pub fn enter_stacked(_mover: bapi.ByondValueRaw, _new_loc: bapi.ByondValueRaw, _
     }
 }
 
-pub fn get_floor_at(_turf: bapi.ByondValueRaw, _height: bapi.ByondValueRaw) callconv(.C) bapi.ByondValueRaw {
+pub fn get_floor_at(_turf: bapi.ByondValueRaw, _mutable: bapi.ByondValueRaw, _height: bapi.ByondValueRaw) callconv(.C) bapi.ByondValueRaw {
     const turf = bapi.ByondValue{ .inner = _turf };
+    const mutable = bapi.ByondValue{ .inner = _mutable };
 
-    const collision_turf = col.fetch_turf_collision(turf, false, core.local_alloc);
-    defer collision_turf.deinit();
+    const floor_refs = col.fetch_floor_colliders(turf, core.local_alloc);
+    defer floor_refs.deinit();
 
     const checked_bit: u72 = @as(u72, (std.math.maxInt(u72) >> 1) + 1) >> @truncate(@as(u24, @intFromFloat(_height.data.num)) - 1);
-    for (collision_turf.items) |val| {
-        if (val.collision_bitmask & checked_bit != 0) {
-            return val.ref.inner;
+    for (floor_refs.items, 0..) |maybe_val, i| {
+        if (maybe_val) |val| {
+            if (val.collision_bitmask & checked_bit != 0) {
+                return get_floor_by_index(turf, @intCast(i), mutable.isTrue()).?.inner;
+            }
         }
     }
     return bapi.getNull().inner;
 }
 
-pub fn get_floor_top(_turf: bapi.ByondValueRaw) callconv(.C) bapi.ByondValueRaw {
+pub fn get_floor_top(_turf: bapi.ByondValueRaw, _mutable: bapi.ByondValueRaw) callconv(.C) bapi.ByondValueRaw {
     const turf = bapi.ByondValue{ .inner = _turf };
+    const mutable = bapi.ByondValue{ .inner = _mutable };
 
-    const collision_turf = col.fetch_turf_collision(turf, false, core.local_alloc);
+    const collision_turf = col.fetch_floor_colliders(turf, core.local_alloc);
     defer collision_turf.deinit();
 
-    return collision_turf.getLast().ref.inner;
+    const ret = get_floor_by_index(turf, @intCast(collision_turf.items.len), mutable.isTrue());
+    if (ret) |val| {
+        return val.inner;
+    }
+    return bapi.getNull().inner;
 }
 
-pub fn get_floor_below(_mover: bapi.ByondValueRaw, _direct: bapi.ByondValueRaw) callconv(.C) bapi.ByondValueRaw {
+pub fn get_floor_below(_mover: bapi.ByondValueRaw, _mutable: bapi.ByondValueRaw, _direct: bapi.ByondValueRaw) callconv(.C) bapi.ByondValueRaw {
     const mover: bapi.ByondValue = .{ .inner = _mover };
+    const mutable = bapi.ByondValue{ .inner = _mutable };
     const _direct_val: bapi.ByondValue = .{ .inner = _direct };
     const direct = _direct_val.isTrue();
     const sref = types.strRefs;
 
     const collision_mover = col.fetch_movable_collision(mover);
-    const collision_turf = col.fetch_turf_collision(
+    const collision_turf = col.fetch_floor_colliders(
         bapi.callGlobalByID(sref.proc_get_step, &[_]bapi.ByondValueRaw{
             mover.inner,
             bapi.getNumber(0).inner,
         }),
-        false,
         core.local_alloc,
     );
     defer collision_turf.deinit();
-    var checked_bit = (collision_mover.collision_bitmask << 1) ^ collision_mover.collision_bitmask;
 
+    var checked_bit = (collision_mover.collision_bitmask << 1) ^ collision_mover.collision_bitmask;
     while (checked_bit != 0) {
-        for (collision_turf.items) |val| {
+        for (collision_turf.items, 0..) |maybe_val, i| {
+            if (maybe_val == null)
+                continue;
+            const val = maybe_val.?;
             if (val.collision_bitmask & checked_bit != 0) {
-                return val.ref.inner;
+                return get_floor_by_index(val.ref, @intCast(i), mutable.isTrue()).?.inner;
             }
         }
         if (direct) {
@@ -234,25 +265,29 @@ pub fn get_floor_below(_mover: bapi.ByondValueRaw, _direct: bapi.ByondValueRaw) 
     return bapi.getNull().inner;
 }
 
-pub fn get_collider_free_space(_target_turf: bapi.ByondValueRaw, _mover: bapi.ByondValueRaw, _custom_height: bapi.ByondValueRaw) callconv(.C) bapi.ByondValueRaw {
-    const mover = bapi.ByondValue{ .inner = _mover };
-    const custom_height = bapi.ByondValue{ .inner = _custom_height };
-    const target_turf = bapi.ByondValue{ .inner = _target_turf };
+pub fn get_floor_by_index(turf: bapi.ByondValue, index: u7, mutable: bool) ?bapi.ByondValue {
+    const sref = types.strRefs;
+    const ref_list = turf.readVarByID(types.strRefs.floor_by_height_index);
+    const arr_floors = ref_list.asList(core.local_alloc);
+    defer core.local_alloc.free(arr_floors);
 
-    var mover_collision = col.fetch_movable_collision(mover);
-    if (custom_height.inner.type == .Number) {
-        const diff: i14 = @as(u7, @intFromFloat(custom_height.inner.data.num)) - @clz(mover_collision);
-        if (diff > 0) {
-            mover_collision.collision_bitmask >>= diff;
-        } else {
-            mover_collision.collision_bitmask <<= -diff;
-        }
-    }
-
-    const collision_turf = col.fetch_turf_collision(target_turf, true, core.local_alloc);
-    defer collision_turf.deinit();
-
-    var going_up = true;
-    while (true) {}
-    @compileError("hi");
+    const arr_entry = arr_floors[index];
+    return switch (arr_entry.inner.type) {
+        .Null => null,
+        .Datum => arr_entry, // already modified, return that
+        .DatumTypepath => {
+            if (mutable) {
+                const new_ref = bapi.new(arr_entry, null);
+                ref_list.writeAt(bapi.getNumber(@floatFromInt(index)), new_ref);
+                return new_ref;
+            } else {
+                return types.globHolder.readVarByID(sref.glob_floor_type_lookup).at(arr_entry);
+            }
+        },
+        else => {
+            @branchHint(.cold);
+            const msg = std.mem.concatWithSentinel(core.local_alloc, u8, &[_][]const u8{ "get_floor_by_index() called with an invalid value (toString: ", arr_entry.toString(core.local_alloc), ")" }, 0) catch unreachable;
+            bapi.crashMsg(msg);
+        },
+    };
 }

@@ -92,6 +92,58 @@ pub fn update_movable_collision(collision: CollisionData) void {
     }
 }
 
+/// Fetches collision data through the floor_by_height_index table. DOES NOT ENSURE MUTABILITY OF THE CONTAINED REFS.
+pub fn fetch_floor_colliders(turf: bapi.ByondValue, allocator: std.mem.Allocator) std.ArrayList(?CollisionData) {
+    const sref = types.strRefs;
+    const floor_data = turf.readVarByID(sref.floor_by_height_index);
+
+    return switch (floor_data.inner.type) {
+        .List => {
+            // list of floor_data paths/instances/nulls
+            @branchHint(.unlikely);
+            const decoded = decode_zebra(import_bitfield(turf, true), allocator);
+            defer decoded.deinit();
+
+            const floor_lookup = floor_data.asList(allocator);
+            defer allocator.free(floor_lookup);
+
+            var ret = std.ArrayList(?CollisionData).initCapacity(allocator, floor_lookup.len) catch unreachable;
+
+            // last element of decoded can be null (open space), and in that case floor_lookup wont store that trailing null
+            // so we must iterate through floor_lookup instead of decoded
+            for (floor_lookup, 0..) |floor, i| {
+                if (floor.inner.type != .Null) {
+                    ret.appendAssumeCapacity(CollisionData{
+                        .collision_bitmask = decoded.items[i],
+                        .ref = floor,
+                    });
+                } else {
+                    ret.appendAssumeCapacity(null);
+                }
+            }
+
+            return ret;
+        },
+        .Null => {
+            // NOTHING, THERE IS NO COLLISION HERE
+            @branchHint(.cold);
+            return std.ArrayList(?CollisionData).init(allocator);
+        },
+        else => {
+            // floor data path/instance
+            @branchHint(.likely);
+
+            var ret = std.ArrayList(?CollisionData).initCapacity(allocator, 1) catch unreachable;
+            ret.appendAssumeCapacity(.{
+                .collision_bitmask = import_bitfield(turf, true),
+                .ref = floor_data,
+            });
+
+            return ret;
+        },
+    };
+}
+
 pub fn fetch_turf_collision(turf: bapi.ByondValue, check_movables: bool, allocator: std.mem.Allocator) std.ArrayList(CollisionData) {
     const sref = types.strRefs;
     //    const coords_index = turf.getXYZ().index();
@@ -114,41 +166,14 @@ pub fn fetch_turf_collision(turf: bapi.ByondValue, check_movables: bool, allocat
     }
 
     // then floors. no inverse iter needed here as these don't overlap also cmon why are you relying on wall Bumped()s.
-    const floor_data = turf.readVarByID(sref.floor_by_height_index);
-    switch (floor_data.inner.type) {
-        .List => {
-            // list of floor_data paths/instances/nulls
-            @branchHint(.unlikely);
-            const decoded = decode_zebra(import_bitfield(turf, true), allocator);
-            defer decoded.deinit();
+    const floor_refs = fetch_floor_colliders(turf, allocator);
+    defer floor_refs.deinit();
 
-            const floor_lookup = floor_data.asList(allocator);
-            defer allocator.free(floor_lookup);
-
-            // last element of decoded can be null (open space), and in that case floor_lookup wont store that trailing null
-            // so we must iterate through floor_lookup instead of decoded
-            for (floor_lookup, 0..) |floor, i| {
-                if (floor.inner.type != .Null) {
-                    collision_arr.append(CollisionData{
-                        .collision_bitmask = decoded.items[i],
-                        .ref = floor,
-                    }) catch unreachable;
-                }
-            }
-        },
-        .Null => {
-            // NOTHING, THERE IS NO COLLISION HERE
-            @branchHint(.cold);
-        },
-        else => {
-            // floor data path/instance
-            @branchHint(.likely);
-            const bitfield = import_bitfield(turf, true);
-            collision_arr.append(.{
-                .collision_bitmask = bitfield,
-                .ref = floor_data,
-            }) catch unreachable;
-        },
+    collision_arr.ensureUnusedCapacity(floor_refs.items.len) catch unreachable;
+    for (floor_refs.items) |maybe_value| {
+        if (maybe_value) |val| {
+            collision_arr.appendAssumeCapacity(val);
+        }
     }
 
     // cache that shit
