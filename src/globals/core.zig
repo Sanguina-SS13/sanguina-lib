@@ -9,4 +9,4 @@ pub const global_alloc = std.heap.page_allocator;
 /// This is because many bapi functions call Byond_Crash()
 /// which doesnt allow defered cleanup to occur.
 pub const local_alloc = arena.allocator();
-pub var rand: std.Random.DefaultPrng = undefined;
+pub var rand: std.Random = undefined;

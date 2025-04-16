@@ -1,9 +1,9 @@
 const std = @import("std");
-const bapi = @import("raw/_byondapi_raw.zig");
-const zig = @import("../global/core.zig");
-const world = @import("world.zig");
 
-const allocator = zig.local_alloc;
+const bapi = @import("_byondapi_raw.zig");
+
+const globals = @import("globals");
+const core = globals.core;
 
 pub const ByondValueRaw = bapi.CByondValue;
 pub const ValueTag = bapi.ByondValueType;
@@ -80,8 +80,13 @@ pub const ByondValue = struct {
     pub fn isTrue(self: ByondValue) bool {
         return bapi.ByondValue_IsTrue(&self.inner);
     }
-    pub fn equals(self: ByondValue, other: ByondValue) bool {
+    /// Check for equality through BYOND internals. Probably accounts for some operator overloading or whatever.
+    pub fn eqlInbuilt(self: ByondValue, other: ByondValue) bool {
         return bapi.ByondValue_Equals(&self.inner, other.inner);
+    }
+    /// Check for strict ref equality.
+    pub fn eqlRef(self: ByondValue, other: ByondValue) bool {
+        return self.inner.type == other.inner.type and self.inner.data.ref == other.inner.data.ref;
     }
 
     /// Casts to f32.
@@ -237,11 +242,11 @@ pub const ByondValue = struct {
     }
 
     pub fn callSrcless(self: ByondValue, proc_name: []const u8, args: ?[]const ByondValueRaw) ByondValue {
-        const floor_type = self.toString(zig.local_alloc);
-        defer zig.local_alloc.free(floor_type);
+        const floor_type = self.toString(core.local_alloc);
+        defer core.local_alloc.free(floor_type);
 
-        const proc = std.mem.concatWithSentinel(zig.local_alloc, u8, &[_][]const u8{ floor_type, "::", proc_name, "()" }, 0) catch unreachable;
-        defer zig.local_alloc.free(proc);
+        const proc = std.mem.concatWithSentinel(core.local_alloc, u8, &[_][]const u8{ floor_type, "::", proc_name, "()" }, 0) catch unreachable;
+        defer core.local_alloc.free(proc);
 
         return callGlobal(proc, args);
     }
@@ -388,7 +393,7 @@ pub fn locateXYZ(xyz: ByondXYZ) ByondValue {
 pub const lastError = bapi.Byond_LastError;
 fn _crash(message: [*:0]const u8) noreturn {
     // free local memory
-    _ = zig.arena.reset(.retain_capacity);
+    _ = core.arena.reset(.retain_capacity);
     bapi.Byond_CRASH(message);
 }
 

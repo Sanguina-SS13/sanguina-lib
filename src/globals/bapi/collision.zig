@@ -1,35 +1,13 @@
+// max value representable through 3 float mantissas
 const std = @import("std");
-const bapi = @import("_byondapi.zig");
+const bapi = @import("byondapi");
+const globals = @import("globals");
+
+const col = @import("../collision.zig");
 const render = @import("render.zig");
-const zig = @import("../global/core.zig");
 const types = @import("types.zig");
 
-pub const CollisionFlags = packed struct(u24) {
-    /// noclip
-    NOCLIP: bool = false,
-    /// the movable will not be considered for other movables' collision checks
-    PASS_THROUGH: bool = false,
-    /// if blocking path, dont call bump on it but still block passage. by default applied to turfs.
-    BLOCK_NO_BUMP: bool = false,
-    /// dont increase height. equivalent to step_size = 0
-    PROHIBIT_HEIGHT_INCREASE: bool = false,
-    _: u20 = undefined,
-};
-
-pub const CollisionData = struct {
-    collision_bitmask: u72,
-    flags: CollisionFlags = .{},
-    ref: bapi.ByondValue,
-};
-
-// max value representable through 3 float mantissas
 pub const MAX_HEIGHT = 72;
-
-// const CollisionCache = struct {
-//     dirty: bool = 1,
-//     collision_data: std.ArrayList(CollisionData),
-// };
-// pub var collision_map: std.AutoHashMap(bapi.HashXYZ, CollisionCache) = undefined;
 
 fn import_bitfield(atom: bapi.ByondValue, comptime is_turf: bool) u72 {
     const sref = types.strRefs;
@@ -76,7 +54,7 @@ fn decode_zebra(zebra: u72, allocator: std.mem.Allocator) std.ArrayList(u72) {
     return ret;
 }
 
-pub fn update_movable_collision(collision: CollisionData) void {
+pub fn update_movable_collision(collision: col.CollisionData) void {
     const movable = collision.ref;
     const height_movable = @clz(collision.collision_bitmask);
     const sref = types.strRefs;
@@ -93,7 +71,7 @@ pub fn update_movable_collision(collision: CollisionData) void {
 }
 
 /// Fetches collision data through the floor_by_height_index table. DOES NOT ENSURE MUTABILITY OF THE CONTAINED REFS.
-pub fn fetch_floor_colliders(turf: bapi.ByondValue, allocator: std.mem.Allocator) std.ArrayList(?CollisionData) {
+pub fn fetch_floor_colliders(turf: bapi.ByondValue, allocator: std.mem.Allocator) std.ArrayList(?col.CollisionData) {
     const sref = types.strRefs;
     const floor_data = turf.readVarByID(sref.floor_by_height_index);
 
@@ -107,13 +85,13 @@ pub fn fetch_floor_colliders(turf: bapi.ByondValue, allocator: std.mem.Allocator
             const floor_lookup = floor_data.asList(allocator);
             defer allocator.free(floor_lookup);
 
-            var ret = std.ArrayList(?CollisionData).initCapacity(allocator, floor_lookup.len) catch unreachable;
+            var ret = std.ArrayList(?col.CollisionData).initCapacity(allocator, floor_lookup.len) catch unreachable;
 
             // last element of decoded can be null (open space), and in that case floor_lookup wont store that trailing null
             // so we must iterate through floor_lookup instead of decoded
             for (floor_lookup, 0..) |floor, i| {
                 if (floor.inner.type != .Null) {
-                    ret.appendAssumeCapacity(CollisionData{
+                    ret.appendAssumeCapacity(col.CollisionData{
                         .collision_bitmask = decoded.items[i],
                         .ref = floor,
                     });
@@ -127,13 +105,13 @@ pub fn fetch_floor_colliders(turf: bapi.ByondValue, allocator: std.mem.Allocator
         .Null => {
             // NOTHING, THERE IS NO COLLISION HERE
             @branchHint(.cold);
-            return std.ArrayList(?CollisionData).init(allocator);
+            return std.ArrayList(?col.CollisionData).init(allocator);
         },
         else => {
             // floor data path/instance
             @branchHint(.likely);
 
-            var ret = std.ArrayList(?CollisionData).initCapacity(allocator, 1) catch unreachable;
+            var ret = std.ArrayList(?col.CollisionData).initCapacity(allocator, 1) catch unreachable;
             ret.appendAssumeCapacity(.{
                 .collision_bitmask = import_bitfield(turf, true),
                 .ref = floor_data,
@@ -144,13 +122,13 @@ pub fn fetch_floor_colliders(turf: bapi.ByondValue, allocator: std.mem.Allocator
     };
 }
 
-pub fn fetch_turf_collision(turf: bapi.ByondValue, check_movables: bool, allocator: std.mem.Allocator) std.ArrayList(CollisionData) {
+pub fn fetch_turf_collision(turf: bapi.ByondValue, check_movables: bool, allocator: std.mem.Allocator) std.ArrayList(col.CollisionData) {
     const sref = types.strRefs;
     //    const coords_index = turf.getXYZ().index();
     //    if (!dirty_coords[coords_index])
     //        return collision_map[coords_index];
 
-    var collision_arr = std.ArrayList(CollisionData).initCapacity(allocator, 16) catch unreachable;
+    var collision_arr = std.ArrayList(col.CollisionData).initCapacity(allocator, 16) catch unreachable;
     // first movables
     if (check_movables) {
         const movable_data = turf.readVarByID(sref.contents).asList(allocator); // contents list is never null
@@ -184,10 +162,10 @@ pub fn fetch_turf_collision(turf: bapi.ByondValue, check_movables: bool, allocat
     return collision_arr;
 }
 
-pub fn fetch_movable_collision(movable: bapi.ByondValue) CollisionData {
-    return CollisionData{
+pub fn fetch_movable_collision(movable: bapi.ByondValue) col.CollisionData {
+    return col.CollisionData{
         .collision_bitmask = import_bitfield(movable, false),
-        .flags = types.float2flags(CollisionFlags, movable.readVarByID(types.strRefs.collision_flags).asNum()),
+        .flags = types.float2flags(col.CollisionFlags, movable.readVarByID(types.strRefs.collision_flags).asNum()),
         .ref = movable,
     };
 }

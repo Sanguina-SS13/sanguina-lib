@@ -1,27 +1,39 @@
 const std = @import("std");
-const bapi = @import("_byondapi.zig");
+const bapi = @import("byondapi");
 
-pub const bitDir = enum(u4) {
-    North = (1 << 0),
-    South = (1 << 1),
-    East = (1 << 2),
-    West = (1 << 3),
+pub const bitDir = packed struct(u4) {
+    North: u1 = 0,
+    South: u1 = 0,
+    East: u1 = 0,
+    West: u1 = 0,
+
+    pub fn reverse(val: bitDir) bitDir {
+        return .{
+            .North = val.South,
+            .South = val.North,
+            .East = val.West,
+            .West = val.East,
+        };
+        // return ((num & 5) << 1) | ((num & 10) >> 1);
+    }
+
+    pub fn cancelOpposite(val: bitDir) bitDir {
+        return .{
+            .North = val.North & !val.South,
+            .South = val.South & !val.North,
+            .East = val.East & !val.West,
+            .West = val.West & !val.East,
+        };
+        //return num & ~(reverse(num));
+    }
 };
 
-pub const intDir = enum {
+pub const intDir = enum(u2) {
     North,
     East,
     South,
     West,
 };
-
-pub fn reverse(val: u4) u4 {
-    return ((val & 5) << 1) | ((val & 10) >> 1);
-}
-
-pub fn cancelOpposite(val: u4) u4 {
-    return val & ~(reverse(val));
-}
 
 /// Returned bitDir uses source as the reference point.
 pub fn coords2dir(source: bapi.ByondXYZ, compared: bapi.ByondXYZ) u4 {

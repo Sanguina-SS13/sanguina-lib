@@ -5,29 +5,47 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    //FIRST, THE UHHH. BYOND.
-    //const raw_header = b.addTranslateC(.{
-    //    .link_libc = false,
-    //    .optimize = .Debug,
-    //    .root_source_file = b.path("src/_byondapi.h"),
-    //    .target = target,
-    //    .use_clang = true,
-    //});
-    //const byondapi = raw_header.addModule("byondapi");
-    //byondapi.linkSystemLibrary("shlwapi", .{});
-
-    //SECOND, pRECOMPTIME SHIT
-    //generatePrecomp(b);
-
-    //THIRD: FINALLY DO THE THING
     const lib = b.addSharedLibrary(.{
         .name = "san",
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
     });
-    //lib.root_module.addImport("byondapi", byondapi);
     b.installArtifact(lib);
+
+    const byondapi = b.addModule(
+        "byondapi",
+        std.Build.Module.CreateOptions{
+            .root_source_file = b.path("src/byondapi/_byondapi.zig"),
+            .target = target,
+            .optimize = optimize,
+        },
+    );
+    const globals = b.addModule(
+        "globals",
+        std.Build.Module.CreateOptions{
+            .root_source_file = b.path("src/globals/_globals.zig"),
+            .target = target,
+            .optimize = optimize,
+        },
+    );
+    byondapi.addImport("globals", globals);
+    globals.addImport("byondapi", byondapi);
+
+    lib.root_module.addImport("byondapi", byondapi);
+    lib.root_module.addImport("globals", globals);
+
+    const unit_tests = b.addTest(.{
+        .root_source_file = b.path("src/root.zig"),
+    });
+    unit_tests.root_module.addImport("byondapi", byondapi);
+    unit_tests.root_module.addImport("globals", byondapi);
+
+    const run_unit_tests = b.addRunArtifact(unit_tests);
+
+    const test_step = b.step("test", "Run unit tests");
+    test_step.dependOn(&run_unit_tests.step);
+    test_step.dependOn(&lib.step);
 }
 
 /// Generates a `generated_files.zig` file that contains pairs of valid map files

@@ -1,9 +1,11 @@
 const std = @import("std");
-const bapi = @import("../byondapi/_byondapi.zig");
-const types = @import("../byondapi/types.zig");
-const zig = @import("../global/core.zig");
-const collision = @import("../byondapi/collision.zig");
-const world = @import("../byondapi/world.zig");
+const bapi = @import("byondapi");
+const globals = @import("globals");
+
+const core = globals.core;
+const collision = globals.collision;
+const types = globals.bapi.types;
+const world = globals.bapi.world;
 
 pub fn init() callconv(.c) bapi.ByondValueRaw {
     // in case of failure, you STILL need to call deinit()
@@ -11,7 +13,8 @@ pub fn init() callconv(.c) bapi.ByondValueRaw {
 
     const seed = 420;
 
-    zig.rand = .init(seed);
+    var xoshiro = std.Random.Xoshiro256.init(seed);
+    core.rand = xoshiro.random();
 
     // type caching
     types.strRefs = .{
