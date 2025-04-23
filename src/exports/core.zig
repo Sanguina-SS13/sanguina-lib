@@ -24,6 +24,7 @@ pub fn init() callconv(.c) bapi.ByondValueRaw {
         .plane = temp.writeStr("plane").incRef().asRef(),
         .invisibility = temp.writeStr("invisibility").incRef().asRef(),
         .see_invisible = temp.writeStr("see_invisible").incRef().asRef(),
+        .type = temp.writeStr("type").incRef().asRef(),
         // turf collision shit
         .floor_by_height_index = temp.writeStr("floor_by_height_index").incRef().asRef(),
         .turf_bitmask_a = temp.writeStr("floor_border_bitmask_upper").incRef().asRef(),

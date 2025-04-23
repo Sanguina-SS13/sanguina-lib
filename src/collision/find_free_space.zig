@@ -13,7 +13,7 @@ const ScanResult = struct {
     /// Are we suspended in mid-air and about to fall on our asses?
     zfall: bool,
 };
-fn scan_down_up(mover: col.CollisionDataExpanded, newloc_collision: u72) ?ScanResult {
+fn scan_down_up(mover: col.MovableCollider, newloc_collision: u72) ?ScanResult {
     if (mover.collision_bitmask & newloc_collision == 0) {
         // doesnt overlap, see if we can lower the dood
         const starter_clz = @clz(mover.collision_bitmask);
@@ -30,11 +30,11 @@ fn scan_down_up(mover: col.CollisionDataExpanded, newloc_collision: u72) ?ScanRe
         const max_shift = @max(starter_clz, mover.step_size);
         var travel_path = mover.collision_bitmask;
         for (1..max_shift + 1) |shift| {
-            const checked_mask = mover.collision_bitmask << shift;
+            const checked_mask = mover.collision_bitmask << @intCast(shift);
             if (checked_mask & newloc_collision != 0) {
                 @branchHint(.likely); // most common usecase: just walking along a straight floor
                 return ScanResult{
-                    .new_collision = mover.collision_bitmask << (shift - 1),
+                    .new_collision = mover.collision_bitmask << @intCast(shift - 1),
                     .travel_path = travel_path,
                     .zfall = false,
                 };
@@ -53,12 +53,12 @@ fn scan_down_up(mover: col.CollisionDataExpanded, newloc_collision: u72) ?ScanRe
         // there's something in the way, see what it takes to step over it
         var travel_path = mover.collision_bitmask;
         for (1..@ctz(mover.collision_bitmask) + 1) |shift| {
-            const checked_mask = mover.collision_bitmask >> shift;
+            const checked_mask = mover.collision_bitmask >> @intCast(shift);
             travel_path |= (travel_path >> 1);
 
             if (checked_mask & newloc_collision == 0) {
                 return ScanResult{
-                    .new_collision = mover.collision_bitmask >> shift,
+                    .new_collision = mover.collision_bitmask >> @intCast(shift),
                     .travel_path = travel_path,
                     .zfall = false,
                 };
@@ -69,7 +69,7 @@ fn scan_down_up(mover: col.CollisionDataExpanded, newloc_collision: u72) ?ScanRe
     }
 }
 
-fn scan_from_top(mover: col.CollisionDataExpanded, newloc_collision: u72) ?ScanResult {
+fn scan_from_top(mover: col.MovableCollider, newloc_collision: u72) ?ScanResult {
     const shifted = mover.collision_bitmask >> @ctz(mover.collision_bitmask);
     for (0..@clz(shifted)) |shift| {
         const checked_mask = shifted << shift;
@@ -89,7 +89,7 @@ fn scan_from_top(mover: col.CollisionDataExpanded, newloc_collision: u72) ?ScanR
     return null;
 }
 
-fn scan_random(mover: col.CollisionDataExpanded, newloc_collision: u72, comptime ensure_grounded: bool) ?ScanResult {
+fn scan_random(mover: col.MovableCollider, newloc_collision: u72, comptime ensure_grounded: bool) ?ScanResult {
     const rand = core.rand;
 
     const unshifted = mover.collision_bitmask << @clz(mover.collision_bitmask);
@@ -135,15 +135,15 @@ const ScanMethod = enum {
 };
 const FindFreeSpaceResult = struct {
     new_col_mask: u72,
-    bumped: std.ArrayList(col.CollisionData),
-    floor: ?col.CollisionData,
+    bumped: std.ArrayList(col.ColliderData),
+    floor: ?col.ColliderData,
 };
-pub fn find_free_space(alloc: std.mem.Allocator, mover: col.CollisionDataExpanded, newloc_collision: []const col.CollisionData, comptime scan_method: ScanMethod) ?FindFreeSpaceResult {
+pub fn find_free_space(alloc: std.mem.Allocator, mover: col.MovableCollider, newloc_collision: []const col.ColliderData, comptime scan_method: ScanMethod) ?FindFreeSpaceResult {
     // As preface, because of the genereticity of this proc, NOCLIP is not considered.
     var total_collision_newloc: u72 = 0;
     for (newloc_collision) |collider| {
-        if (!collider.flags.PASS_THROUGH)
-            total_collision_newloc |= collider.collision_bitmask;
+        if (!collider.flags().PASS_THROUGH)
+            total_collision_newloc |= collider.bitmask();
     }
 
     const maybe_scan_data = switch (scan_method) {
@@ -153,27 +153,30 @@ pub fn find_free_space(alloc: std.mem.Allocator, mover: col.CollisionDataExpande
         .RandomGrounded => scan_random(mover, total_collision_newloc, true),
     };
 
-    if (!maybe_scan_data) {
+    if (maybe_scan_data == null) {
         return null;
     }
     const scan_data = maybe_scan_data.?;
 
-    var passthroughs = std.ArrayList(col.CollisionData).init(alloc);
+    var passthroughs = std.ArrayList(col.ColliderData).init(alloc);
     for (newloc_collision) |collider| {
-        if (!collider.flags.PASS_THROUGH)
+        const bitmask = collider.bitmask();
+        const flags = collider.flags();
+
+        if (!flags.PASS_THROUGH)
             continue;
 
-        if (collider.collision_bitmask & scan_data.travel_path)
+        if (bitmask & scan_data.travel_path != 0)
             passthroughs.append(collider) catch unreachable;
     }
 
     const floor_bits = bit.floor_bits(mover.collision_bitmask);
     const floor = for (newloc_collision) |collider| {
-        if (collider.flags.PASS_THROUGH)
+        if (collider.flags().PASS_THROUGH)
             continue;
 
-        if (collider.collision_bitmask & floor_bits)
-            return collider;
+        if (collider.bitmask() & floor_bits != 0)
+            break collider;
     } else null;
 
     return FindFreeSpaceResult{

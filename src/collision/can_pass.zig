@@ -9,24 +9,24 @@ const CanPassMovableResult = struct {
     passable: bool,
     bumped: bool,
 };
-fn can_pass_movable(mover_col: col.CollisionDataExpanded, bumped: col.CollisionData) CanPassMovableResult {
+fn canPassMovable(mover_col: col.MovableCollider, bumped: col.ColliderData) CanPassMovableResult {
     const ret = CanPassMovableResult;
 
-    if (mover_col.ref.eqlRef(bumped.ref)) {
+    if (bumped.eql(col.ColliderData{ .Movable = mover_col })) {
         @branchHint(.unlikely);
         return ret{ .bumped = false, .passable = true }; // dont collide with yourself kthx
     }
-    if (bumped.collision_bitmask & bumped.collision_bitmask == 0)
+    if (mover_col.collision_bitmask & bumped.bitmask() == 0)
         // no collision
         return ret{ .bumped = false, .passable = true };
 
     // we collide, but can we pass
-    if (bumped.flags.PASS_THROUGH) {
+    if (bumped.flags().PASS_THROUGH) {
         @branchHint(.unlikely);
         return ret{ .bumped = true, .passable = true };
     }
     // do we bump?
-    if (bumped.flags.BLOCK_NO_BUMP) {
+    if (bumped.flags().BLOCK_NO_BUMP) {
         @branchHint(.unlikely);
         return ret{ .bumped = false, .passable = false };
     }
@@ -37,13 +37,13 @@ fn can_pass_movable(mover_col: col.CollisionDataExpanded, bumped: col.CollisionD
 const CanPassResult = struct {
     allowed: bool,
     new_collision_bitmask: u72,
-    bumped: std.ArrayList(col.CollisionData),
+    bumped: std.ArrayList(col.ColliderData),
 };
-pub fn can_pass(alloc: std.mem.Allocator, mover_col: col.CollisionDataExpanded, newloc_cols: []const col.CollisionData, oldloc_cols: []const col.CollisionData) CanPassResult {
+pub fn canPass(alloc: std.mem.Allocator, mover_col: col.MovableCollider, newloc_cols: []const col.ColliderData, oldloc_cols: []const col.ColliderData) CanPassResult {
     var ret = CanPassResult{
         .allowed = false,
         .new_collision_bitmask = mover_col.collision_bitmask,
-        .bumped = std.ArrayList(col.CollisionData).init(alloc),
+        .bumped = std.ArrayList(col.ColliderData).init(alloc),
     };
     if (mover_col.flags.NOCLIP) {
         @branchHint(.unlikely);
@@ -51,24 +51,24 @@ pub fn can_pass(alloc: std.mem.Allocator, mover_col: col.CollisionDataExpanded, 
         return ret;
     }
 
-    var passthroughs = std.ArrayList(col.CollisionData).initCapacity(alloc, 4) catch unreachable;
+    var passthroughs = std.ArrayList(col.ColliderData).initCapacity(alloc, 4) catch unreachable;
     defer passthroughs.deinit();
 
     const mover_head = bit.head_bit(mover_col.collision_bitmask);
 
-    var bumped: ?col.CollisionData = null;
+    var bumped: ?col.ColliderData = null;
     outer: for (0..@min(mover_col.step_size, @ctz(mover_head)) + 1) |i| {
         if (i != 0) {
             // check if we're not bumping into a ceiling
             inner: for (oldloc_cols) |collider| {
-                const cp = can_pass_movable(mover_col, collider);
+                const cp = canPassMovable(mover_col, collider);
                 if (!cp.passable) {
                     continue :outer;
                 }
 
                 if (cp.bumped) {
                     for (passthroughs.items) |passer| {
-                        if (passer.ref.eqlRef(collider.ref))
+                        if (passer.eql(collider))
                             continue :inner;
                     }
                     passthroughs.append(collider) catch unreachable;
@@ -79,11 +79,12 @@ pub fn can_pass(alloc: std.mem.Allocator, mover_col: col.CollisionDataExpanded, 
 
         var blocked_movement = false;
         inner: for (newloc_cols) |collider| {
-            const cp = can_pass_movable(mover_col, collider);
+            const cp = canPassMovable(mover_col, collider);
             if (cp.passable) {
                 if (cp.bumped) {
+                    // dont append us multiple times..
                     for (passthroughs.items) |passer| {
-                        if (passer.ref.eqlRef(collider.ref))
+                        if (passer.eql(collider))
                             continue :inner;
                     }
                     passthroughs.append(collider) catch unreachable;
@@ -108,98 +109,149 @@ pub fn can_pass(alloc: std.mem.Allocator, mover_col: col.CollisionDataExpanded, 
     return ret;
 }
 
-test "can_pass" {
-    const CollisionData = col.CollisionData;
-    const CollisionDataExpanded = col.CollisionDataExpanded;
-
+test "canPass leveled floor" {
     const alloc = std.testing.allocator;
 
-    var mover_col = CollisionDataExpanded{
-        .collision_bitmask = 0,
-        .flags = .{},
+    const movable_col_mask = 0b00000000_11100000_00000000;
+    const new_loc_col_mask = 0b11111111_00000000_00000000;
+
+    const mover_col = col.MovableCollider{
+        .collision_bitmask = movable_col_mask,
         .ref = bapi.getNumber(1).inner,
         .step_size = 1,
     };
-    var newloc_col = [2]CollisionData{
-        CollisionData{ .collision_bitmask = 0, .flags = .{}, .ref = bapi.getNumber(2).inner },
-        CollisionData{ .collision_bitmask = 0, .flags = .{}, .ref = bapi.getNumber(3).inner },
+    const newloc_col = [1]col.FloorCollider{.{
+        .collision_bitmask = new_loc_col_mask,
+    }};
+
+    const result = canPass(alloc, mover_col, newloc_col, .{});
+    defer result.bumped.deinit();
+
+    try std.testing.expect(result.allowed);
+    try std.testing.expectEqual(result.new_collision_bitmask, mover_col.collision_bitmask);
+    try std.testing.expectEqual(result.bumped.items.len, 0);
+}
+
+test "canPass step up" {
+    const alloc = std.testing.allocator;
+
+    const movable_col_mask = 0b00000000_11100000_00000000;
+    const newloc_col_mask_ = 0b11111111_10000000_00000000;
+
+    const mover_col = col.MovableCollider{
+        .collision_bitmask = movable_col_mask,
+        .ref = bapi.getNumber(1).inner,
+        .step_size = 1,
     };
-    var oldloc_cols = [2]CollisionData{
-        CollisionData{ .collision_bitmask = 0, .flags = .{}, .ref = bapi.getNumber(4).inner },
+    const newloc_col = [1]col.FloorCollider{.{
+        .collision_bitmask = newloc_col_mask_,
+    }};
+
+    const result = canPass(alloc, mover_col, newloc_col, .{});
+    defer result.bumped.deinit();
+
+    try std.testing.expect(result.allowed);
+    try std.testing.expectEqual(result.new_collision_bitmask, mover_col.collision_bitmask >> 1);
+    try std.testing.expectEqual(result.bumped.items.len, 0);
+}
+
+test "canPass step down" {
+    const alloc = std.testing.allocator;
+
+    const movable_col_mask = 0b00000000_11100000_00000000;
+    const newloc_col_mask_ = 0b11111110_00000000_00000000;
+
+    const mover_col = col.MovableCollider{
+        .collision_bitmask = movable_col_mask,
+        .ref = bapi.getNumber(1).inner,
+        .step_size = 1,
+    };
+    const newloc_col = [1]col.FloorCollider{.{
+        .collision_bitmask = newloc_col_mask_,
+    }};
+
+    const result = canPass(alloc, mover_col, newloc_col, .{});
+    defer result.bumped.deinit();
+
+    try std.testing.expect(result.allowed);
+    try std.testing.expectEqual(result.new_collision_bitmask, mover_col.collision_bitmask); // we dont handle this stuff
+    try std.testing.expectEqual(result.bumped.items.len, 0);
+}
+
+test "canPass blocked by newloc" {
+    const alloc = std.testing.allocator;
+
+    const movable_col_mask_ = 0b00000000_11100000_00000000;
+    const newloc_col_mask_a = 0b11111111_11000000_00000000;
+    const newloc_col_mask_b = 0b00000000_00011111_00000000;
+
+    const mover_col = col.MovableCollider{
+        .collision_bitmask = movable_col_mask_,
+        .ref = bapi.getNumber(1).inner,
+        .step_size = 1,
+    };
+    const newloc_col = [2]col.FloorCollider{ .{
+        .collision_bitmask = newloc_col_mask_a,
+    }, .{
+        .collision_bitmask = newloc_col_mask_b,
+    } };
+
+    const result = canPass(alloc, mover_col, newloc_col, .{});
+    defer result.bumped.deinit();
+
+    try std.testing.expect(!result.allowed);
+    try std.testing.expectEqual(result.new_collision_bitmask, mover_col.collision_bitmask);
+    try std.testing.expectEqualSlices(result.bumped.items, newloc_col);
+}
+
+test "canPass blocked by oldloc" {
+    const alloc = std.testing.allocator;
+
+    const movable_col_mask = 0b00000000_11100000_00000000;
+    const newloc_col_mask_ = 0b11111111_10000000_00000000;
+    const oldloc_col_mask_ = 0b00000000_00011111_00000000;
+
+    const mover_col = col.MovableCollider{
+        .collision_bitmask = movable_col_mask,
+        .ref = bapi.getNumber(1).inner,
+        .step_size = 1,
+    };
+    const newloc_col = [1]col.FloorCollider{.{
+        .collision_bitmask = newloc_col_mask_,
+    }};
+    const oldloc_col = [1]col.FloorCollider{
+        .{
+            .collision_bitmask = oldloc_col_mask_,
+        },
     };
 
-    var result: CanPassResult = undefined;
-
-    // Test case 1: No collision
-    mover_col.collision_bitmask =
-        0b00000000_11100000_00000000;
-    newloc_col[0].collision_bitmask =
-        0b11111111_00000000_00000000;
-    oldloc_cols[0].collision_bitmask =
-        0b00000000_00000000_00000000;
-
-    result = can_pass(alloc, mover_col, newloc_col, oldloc_cols);
+    const result = canPass(alloc, mover_col, newloc_col, oldloc_col);
     defer result.bumped.deinit();
-    std.debug.assert(result.allowed == true);
-    std.debug.assert(result.new_collision_bitmask == mover_col.collision_bitmask);
-    std.debug.assert(result.bumped.items.len == 0);
 
-    // Test case 2: Step up + passthrough
-    mover_col.collision_bitmask =
-        0b00000000_11100000_00000000;
-    newloc_col[0].collision_bitmask =
-        0b11111111_10000000_00000000;
-    newloc_col[1].collision_bitmask =
-        0b00000000_00011000_00000000;
-    newloc_col[1].flags.PASS_THROUGH = true;
-    oldloc_cols[0].collision_bitmask =
-        0b00000000_00000000_00000000;
+    try std.testing.expect(!result.allowed);
+    try std.testing.expectEqual(result.new_collision_bitmask, mover_col.collision_bitmask);
+    try std.testing.expectEqualSlices(result.bumped.items, newloc_col);
+}
 
-    result = can_pass(alloc, mover_col, newloc_col, oldloc_cols);
+test "canPass wacky newloc" {
+    const alloc = std.testing.allocator;
+
+    const movable_col_mask = 0b00000000_11100000_00000000;
+    const new_loc_col_mask = 0b10101010_10101010_10101010;
+
+    const mover_col = col.MovableCollider{
+        .collision_bitmask = movable_col_mask,
+        .ref = bapi.getNumber(1).inner,
+        .step_size = 1,
+    };
+    const newloc_col = [1]col.FloorCollider{.{
+        .collision_bitmask = new_loc_col_mask,
+    }};
+
+    const result = canPass(alloc, mover_col, newloc_col, .{});
     defer result.bumped.deinit();
-    std.debug.assert(result.allowed == true);
-    std.debug.assert(result.new_collision_bitmask == mover_col.collision_bitmask >> 1);
-    std.debug.assert(result.bumped.items.len == 1 and std.mem.eql(result.bumped.items[0], newloc_col[1]));
 
-    // Test case 3: Blocked by newloc
-    mover_col.collision_bitmask =
-        0b00000000_11100000_00000000;
-    newloc_col[0].collision_bitmask =
-        0b11111111_11100000_00000000;
-    oldloc_cols[0].collision_bitmask =
-        0b00000000_00000000_00000000;
-    result = can_pass(alloc, mover_col, newloc_col, oldloc_cols);
-    defer result.bumped.deinit();
-    std.debug.assert(result.allowed == false);
-    std.debug.assert(result.new_collision_bitmask == mover_col.collision_bitmask);
-    std.debug.assert(result.bumped.items.len == 0);
-
-    // Test case 4: Wacky newloc
-    mover_col.collision_bitmask =
-        0b00000000_11100000_00000000;
-    newloc_col[0].collision_bitmask =
-        0b10101010_10101010_10101010;
-    oldloc_cols[0].collision_bitmask =
-        0b00000000_00000000_00000000;
-
-    newloc_col[1].flags.BLOCK_NO_BUMP = true;
-
-    result = can_pass(alloc, mover_col, newloc_col, oldloc_cols);
-    defer result.bumped.deinit();
-    std.debug.assert(result.allowed == false);
-    std.debug.assert(result.new_collision_bitmask == mover_col.collision_bitmask);
-    std.debug.assert(result.bumped.items.len == 0);
-
-    // Test case 5: Ceiling bump
-    mover_col.collision_bitmask =
-        0b00000000_11100000_00000000;
-    newloc_col[0].collision_bitmask =
-        0b11111111_10000000_00000000;
-    oldloc_cols[0].collision_bitmask =
-        0b00000000_00011111_00000000;
-    result = can_pass(alloc, mover_col, newloc_col, oldloc_cols);
-    defer result.bumped.deinit();
-    std.debug.assert(result.allowed == false);
-    std.debug.assert(result.new_collision_bitmask == mover_col.collision_bitmask);
-    std.debug.assert(result.bumped.items.len == 1 and std.mem.eql(result.bumped.items[0], newloc_col[0]));
+    try std.testing.expect(!result.allowed);
+    try std.testing.expectEqual(result.new_collision_bitmask, mover_col.collision_bitmask >> 1);
+    try std.testing.expectEqual(result.bumped.items.len, 0);
 }

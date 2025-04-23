@@ -60,6 +60,7 @@ pub var strRefs: struct {
     plane: bapi.RefID,
     invisibility: bapi.RefID,
     see_invisible: bapi.RefID,
+    type: bapi.RefID,
     // floor map
     floor_by_height_index: bapi.RefID,
     turf_bitmask_a: bapi.RefID,

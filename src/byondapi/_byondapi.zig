@@ -161,7 +161,7 @@ pub const ByondValue = struct {
         return self;
     }
 
-    pub fn asAssoc(self: ByondValue, alloc: std.mem.Allocator) std.HashMap {
+    pub fn asAssoc(self: ByondValue, alloc: std.mem.Allocator) std.HashMap(ByondValue, ByondValue) {
         var len: bapi.u4c = undefined;
         _ = bapi.Byond_ReadList(&self, null, &len); // until confirmed, assume it returns false when querying
 
@@ -171,9 +171,12 @@ pub const ByondValue = struct {
         if (!bapi.Byond_ReadListAssoc(&self, &list, &len))
             crash();
 
-        var ret: std.AutoHashMap(ByondValue, ByondValue) = .init(alloc);
+        var ret = std.AutoHashMap(ByondValue, ByondValue).init(alloc);
         for (0..(list.len >> 1)) |i| {
-            try ret.putNoClobber(list[i * 2], list[i * 2 + 1]);
+            ret.putNoClobber(
+                ByondValue{ .inner = list[i * 2] },
+                ByondValue{ .inner = list[i * 2 + 1] },
+            ) catch unreachable;
         }
 
         return ret;
