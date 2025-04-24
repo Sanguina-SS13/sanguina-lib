@@ -1,4 +1,4 @@
-const exports = @import("..//collision/_exports.zig");
+const exports = @import("../collision/_exports.zig");
 
 pub const enter_stacked = exports.enter_stacked;
 pub const entered_stacked = exports.entered_stacked;

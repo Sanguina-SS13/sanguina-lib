@@ -117,14 +117,18 @@ test "canPass leveled floor" {
 
     const mover_col = col.MovableCollider{
         .collision_bitmask = movable_col_mask,
-        .ref = bapi.getNumber(1).inner,
+        .ref = bapi.getNumber(1),
         .step_size = 1,
     };
-    const newloc_col = [1]col.FloorCollider{.{
+    const newloc_col = [1]col.ColliderData{.{ .Floor = .{
         .collision_bitmask = new_loc_col_mask,
-    }};
+        .turf_ref = undefined,
+        .floor_ref = undefined,
+        .height_index = undefined,
+        .floor_by_height_index = undefined,
+    } }};
 
-    const result = canPass(alloc, mover_col, newloc_col, .{});
+    const result = canPass(alloc, mover_col, &newloc_col, &[_]col.ColliderData{});
     defer result.bumped.deinit();
 
     try std.testing.expect(result.allowed);
@@ -140,14 +144,18 @@ test "canPass step up" {
 
     const mover_col = col.MovableCollider{
         .collision_bitmask = movable_col_mask,
-        .ref = bapi.getNumber(1).inner,
+        .ref = bapi.getNumber(1),
         .step_size = 1,
     };
-    const newloc_col = [1]col.FloorCollider{.{
+    const newloc_col: [1]col.ColliderData = .{.{ .Floor = .{
         .collision_bitmask = newloc_col_mask_,
-    }};
+        .turf_ref = undefined,
+        .floor_ref = undefined,
+        .height_index = undefined,
+        .floor_by_height_index = undefined,
+    } }};
 
-    const result = canPass(alloc, mover_col, newloc_col, .{});
+    const result = canPass(alloc, mover_col, &newloc_col, &[_]col.ColliderData{});
     defer result.bumped.deinit();
 
     try std.testing.expect(result.allowed);
@@ -163,14 +171,18 @@ test "canPass step down" {
 
     const mover_col = col.MovableCollider{
         .collision_bitmask = movable_col_mask,
-        .ref = bapi.getNumber(1).inner,
+        .ref = bapi.getNumber(1),
         .step_size = 1,
     };
-    const newloc_col = [1]col.FloorCollider{.{
+    const newloc_col = [1]col.ColliderData{.{ .Floor = .{
         .collision_bitmask = newloc_col_mask_,
-    }};
+        .turf_ref = undefined,
+        .floor_ref = undefined,
+        .height_index = undefined,
+        .floor_by_height_index = undefined,
+    } }};
 
-    const result = canPass(alloc, mover_col, newloc_col, .{});
+    const result = canPass(alloc, mover_col, &newloc_col, &[_]col.ColliderData{});
     defer result.bumped.deinit();
 
     try std.testing.expect(result.allowed);
@@ -187,21 +199,34 @@ test "canPass blocked by newloc" {
 
     const mover_col = col.MovableCollider{
         .collision_bitmask = movable_col_mask_,
-        .ref = bapi.getNumber(1).inner,
+        .ref = bapi.getNumber(1),
         .step_size = 1,
     };
-    const newloc_col = [2]col.FloorCollider{ .{
+    const newloc_col = [2]col.ColliderData{ .{ .Floor = .{
         .collision_bitmask = newloc_col_mask_a,
-    }, .{
+        .turf_ref = undefined,
+        .floor_ref = undefined,
+        .height_index = undefined,
+        .floor_by_height_index = undefined,
+    } }, .{ .Floor = .{
         .collision_bitmask = newloc_col_mask_b,
-    } };
+        .turf_ref = undefined,
+        .floor_ref = undefined,
+        .height_index = undefined,
+        .floor_by_height_index = undefined,
+    } } };
 
-    const result = canPass(alloc, mover_col, newloc_col, .{});
+    const result = canPass(alloc, mover_col, &newloc_col, &[_]col.ColliderData{});
     defer result.bumped.deinit();
 
     try std.testing.expect(!result.allowed);
     try std.testing.expectEqual(result.new_collision_bitmask, mover_col.collision_bitmask);
-    try std.testing.expectEqualSlices(result.bumped.items, newloc_col);
+
+    try std.testing.expectEqual(result.bumped.items.len, newloc_col.len);
+    try for (result.bumped.items, newloc_col) |x, y| {
+        if (!x.eql(y))
+            break error.TestExpectedEqual;
+    };
 }
 
 test "canPass blocked by oldloc" {
@@ -213,24 +238,35 @@ test "canPass blocked by oldloc" {
 
     const mover_col = col.MovableCollider{
         .collision_bitmask = movable_col_mask,
-        .ref = bapi.getNumber(1).inner,
+        .ref = bapi.getNumber(1),
         .step_size = 1,
     };
-    const newloc_col = [1]col.FloorCollider{.{
+    const newloc_col = [1]col.ColliderData{.{ .Floor = .{
         .collision_bitmask = newloc_col_mask_,
-    }};
-    const oldloc_col = [1]col.FloorCollider{
-        .{
-            .collision_bitmask = oldloc_col_mask_,
-        },
-    };
+        .turf_ref = undefined,
+        .floor_ref = undefined,
+        .height_index = undefined,
+        .floor_by_height_index = undefined,
+    } }};
+    const oldloc_col = [1]col.ColliderData{.{ .Floor = .{
+        .collision_bitmask = oldloc_col_mask_,
+        .turf_ref = undefined,
+        .floor_ref = undefined,
+        .height_index = undefined,
+        .floor_by_height_index = undefined,
+    } }};
 
-    const result = canPass(alloc, mover_col, newloc_col, oldloc_col);
+    const result = canPass(alloc, mover_col, &newloc_col, &oldloc_col);
     defer result.bumped.deinit();
 
     try std.testing.expect(!result.allowed);
     try std.testing.expectEqual(result.new_collision_bitmask, mover_col.collision_bitmask);
-    try std.testing.expectEqualSlices(result.bumped.items, newloc_col);
+
+    try std.testing.expectEqual(result.bumped.items.len, newloc_col.len);
+    try for (result.bumped.items, newloc_col) |x, y| {
+        if (!x.eql(y))
+            break error.TestExpectedEqual;
+    };
 }
 
 test "canPass wacky newloc" {
@@ -241,14 +277,18 @@ test "canPass wacky newloc" {
 
     const mover_col = col.MovableCollider{
         .collision_bitmask = movable_col_mask,
-        .ref = bapi.getNumber(1).inner,
+        .ref = bapi.getNumber(1),
         .step_size = 1,
     };
-    const newloc_col = [1]col.FloorCollider{.{
+    const newloc_col = [1]col.ColliderData{.{ .Floor = .{
         .collision_bitmask = new_loc_col_mask,
-    }};
+        .turf_ref = undefined,
+        .floor_ref = undefined,
+        .height_index = undefined,
+        .floor_by_height_index = undefined,
+    } }};
 
-    const result = canPass(alloc, mover_col, newloc_col, .{});
+    const result = canPass(alloc, mover_col, &newloc_col, &[_]col.ColliderData{});
     defer result.bumped.deinit();
 
     try std.testing.expect(!result.allowed);

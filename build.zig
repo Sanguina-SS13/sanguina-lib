@@ -36,16 +36,16 @@ pub fn build(b: *std.Build) void {
     lib.root_module.addImport("globals", globals);
 
     const unit_tests = b.addTest(.{
+        //.root_source_file = b.path("src/root_test.zig"),
         .root_source_file = b.path("src/root.zig"),
     });
     unit_tests.root_module.addImport("byondapi", byondapi);
-    unit_tests.root_module.addImport("globals", byondapi);
+    unit_tests.root_module.addImport("globals", globals);
 
     const run_unit_tests = b.addRunArtifact(unit_tests);
 
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_unit_tests.step);
-    test_step.dependOn(&lib.step);
 }
 
 /// Generates a `generated_files.zig` file that contains pairs of valid map files

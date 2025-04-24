@@ -70,8 +70,8 @@ pub const ColliderData = union(ColliderTag) {
     Movable: MovableCollider,
 
     pub fn eql(self: ColliderData, other: ColliderData) bool {
-        // if (@as(ColliderTag, self) != @as(ColliderTag, other))
-        //     return false;
+        if (@as(ColliderTag, self) != @as(ColliderTag, other))
+            return false;
 
         return switch (self) {
             .Floor => |v| v.eql(other.Floor),
